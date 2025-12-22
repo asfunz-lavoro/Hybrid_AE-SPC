@@ -1,6 +1,7 @@
 pandas
 numpy
 matplotlib
+optuna
 seaborn
 scikit-learn
 scipy
