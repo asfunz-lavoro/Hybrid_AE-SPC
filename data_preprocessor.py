@@ -1,5 +1,8 @@
 import pandas as pd
 import os
+import numpy as np
+from sklearn.preprocessing import LabelEncoder
+import pickle
 
 # --- Configuration (Kept for easy modification outside the class) ---
 PATH = 'Missioni_AGV_B.csv'
@@ -9,17 +12,23 @@ FEATURES_MODEL = ['DataOraInizio', 'DataOraFine', 'DurataMissione',
                   'NodoOrigine', 'NodoDestinazione', 'DataOraInserimento', 
                   'Operazione', 'Agv', 'TerminataConSuccesso']
 DATE_COLUMNS = ['DataOraInizio', 'DataOraFine', 'DataOraInserimento']
+CATEGORICAL_COLUMNS = ['Agv', 'NodoOrigine', 'NodoDestinazione', 'Operazione', 'TerminataConSuccesso']
+NUMERIC_COLUMNS = ['DurataMissione']  # Numeric columns that will be kept as-is
 MISSING_VALUE_THRESHOLD = 0.7  # Keep columns with at least 70% of data
+ENCODERS_FILE = 'encoders.pkl'  # File to store label encoders for inference
 
 
 class AGVDataPreprocessor:
     """
-    A class for loading, cleaning, feature engineering, and saving AGV mission data.
+    A class for loading, cleaning, feature engineering, encoding categorical variables,
+    and saving AGV mission data.
     """
 
     def __init__(self, path=PATH, output_folder=OUTPUT_FOLDER, 
                  output_file=OUTPUT_FILE, features_model=FEATURES_MODEL, 
-                 date_columns=DATE_COLUMNS, missing_value_threshold=MISSING_VALUE_THRESHOLD):
+                 date_columns=DATE_COLUMNS, categorical_columns=CATEGORICAL_COLUMNS,
+                 numeric_columns=NUMERIC_COLUMNS, missing_value_threshold=MISSING_VALUE_THRESHOLD,
+                 encoders_file=ENCODERS_FILE):
         """
         Initializes the Preprocessor with configuration parameters.
         """
@@ -28,8 +37,14 @@ class AGVDataPreprocessor:
         self.output_file = output_file
         self.features_model = features_model
         self.date_columns = date_columns
+        self.categorical_columns = categorical_columns
+        self.numeric_columns = numeric_columns
         self.missing_value_threshold = missing_value_threshold
-        self.data = None # Store the processed DataFrame
+        self.encoders_file = encoders_file
+        self.data = None  # Store the processed DataFrame
+        self.encoders = {}  # Store label encoders for categorical features
+        self.cat_dims = {}  # Store categorical dimensions (n_unique_values for each categorical)
+        self.shared_node_vocab = {}  # Shared vocabulary for NodoOrigine and NodoDestinazione
 
 
     def load_data(self):
@@ -108,6 +123,79 @@ class AGVDataPreprocessor:
         self.data = data
         return self.data
 
+    def encode_categorical_features(self):
+        """
+        Encode categorical columns into integers using LabelEncoder.
+        For high-cardinality features (NodoOrigine, NodoDestinazione), use a shared vocabulary.
+        Adds a 'catch-all' index for unseen values during inference.
+        """
+        if self.data is None:
+            print("Error: Data not loaded/cleaned. Call load_data() and clean_data() first.")
+            return None
+        
+        print("Encoding categorical features...")
+        data = self.data.copy()
+        
+        # Build shared vocabulary for Node columns (high cardinality: 200+ nodes)
+        # Combine all node values from both origin and destination
+        node_cols = ['NodoOrigine', 'NodoDestinazione']
+        node_values = set()
+        for col in node_cols:
+            if col in data.columns:
+                node_values.update(data[col].dropna().unique())
+        
+        # Create shared node encoder
+        node_list = sorted(list(node_values))
+        # Reserve index 0 for unseen nodes (catch-all during inference)
+        self.shared_node_vocab = {node: idx + 1 for idx, node in enumerate(node_list)}
+        print(f"  > Shared Node Vocabulary: {len(self.shared_node_vocab)} unique nodes (+ 1 catch-all index)")
+        
+        # Encode each categorical column
+        for col in self.categorical_columns:
+            if col not in data.columns:
+                continue
+            
+            if col in node_cols:
+                # Use shared node vocabulary
+                data[f'{col}_encoded'] = data[col].map(lambda x: self.shared_node_vocab.get(x, 0))
+                self.cat_dims[col] = len(self.shared_node_vocab) + 1  # +1 for catch-all
+            else:
+                # Use individual LabelEncoder for other categorical features
+                encoder = LabelEncoder()
+                # Add catch-all category before fitting
+                values = data[col].dropna().unique()
+                encoder.fit(sorted(values))
+                data[f'{col}_encoded'] = data[col].map(
+                    lambda x: encoder.transform([x])[0] + 1 if x in encoder.classes_ else 0
+                )
+                self.encoders[col] = encoder
+                # +1 for catch-all index (0)
+                self.cat_dims[col] = len(encoder.classes_) + 1
+                print(f"  > {col}: {len(encoder.classes_)} unique values")
+        
+        self.data = data
+        return self.data
+    
+    def save_encoders(self):
+        """
+        Save label encoders and metadata to a pickle file for later inference.
+        """
+        os.makedirs(self.output_folder, exist_ok=True)
+        encoders_path = os.path.join(self.output_folder, self.encoders_file)
+        
+        metadata = {
+            'encoders': self.encoders,
+            'cat_dims': self.cat_dims,
+            'shared_node_vocab': self.shared_node_vocab,
+            'categorical_columns': self.categorical_columns,
+            'numeric_columns': self.numeric_columns
+        }
+        
+        with open(encoders_path, 'wb') as f:
+            pickle.dump(metadata, f)
+        
+        print(f"✅ Encoders and metadata saved to: {encoders_path}")
+
 
     def save_data(self, output_file=None):
         """
@@ -183,8 +271,15 @@ class AGVDataPreprocessor:
         # 3. Create Features (Feature Engineering)
         if self.create_features() is None:
             return
+        
+        # 4. Encode Categorical Features
+        if self.encode_categorical_features() is None:
+            return
+        
+        # 5. Save Encoders
+        self.save_encoders()
             
-        # 4. Save Data
+        # 6. Save Data
         if save_option == 'single':
             self.save_data()
         elif save_option == 'split':
@@ -202,4 +297,4 @@ if __name__ == '__main__':
     # Run the entire pipeline
     # Choose save_option='single' to save all data to one file (data_cleaned.csv)
     # Choose save_option='split' to save data to separate files for each AGV (data_cleaned_AGV1.csv, etc.)
-    preprocessor.run_pipeline(save_option='split')
+    preprocessor.run_pipeline(save_option='single')
