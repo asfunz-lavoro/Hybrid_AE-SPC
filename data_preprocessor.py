@@ -14,7 +14,7 @@ FEATURES_MODEL = ['DataOraInizio', 'DataOraFine', 'DurataMissione',
 DATE_COLUMNS = ['DataOraInizio', 'DataOraFine', 'DataOraInserimento']
 CATEGORICAL_COLUMNS = ['Agv', 'NodoOrigine', 'NodoDestinazione', 'Operazione', 'TerminataConSuccesso']
 NUMERIC_COLUMNS = ['DurataMissione']  # Numeric columns that will be kept as-is
-MISSING_VALUE_THRESHOLD = 0.7  # Keep columns with at least 70% of data
+MISSING_VALUE_THRESHOLD = 0.8  # Keep columns with at least 70% of data
 ENCODERS_FILE = 'encoders.pkl'  # File to store label encoders for inference
 
 
